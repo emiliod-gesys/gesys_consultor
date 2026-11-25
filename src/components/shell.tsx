@@ -8,18 +8,20 @@ export function Shell({
   children,
   aside,
   fill = false,
+  compact = false,
 }: {
   children: ReactNode;
   aside?: ReactNode;
   fill?: boolean;
+  compact?: boolean;
 }) {
   return (
     <div
-      className={`mx-auto flex w-full max-w-6xl flex-col px-4 py-6 sm:px-8 ${fill ? "h-dvh overflow-hidden" : "min-h-dvh"}`}
+      className={`mx-auto flex w-full max-w-6xl flex-col px-3 sm:px-8 ${compact ? "py-2 sm:py-3" : "py-6"} ${fill ? "h-dvh overflow-hidden" : "min-h-dvh"}`}
     >
-      <header className="mb-8 flex items-center justify-between gap-4">
+      <header className={`flex items-center justify-between gap-2 ${compact ? "mb-2" : "mb-8"}`}>
         <Link href="/" className="flex min-w-0 items-center gap-3 rounded-2xl">
-          <BrandLogo className="w-40 sm:w-52" />
+          <BrandLogo className={compact ? "w-24 sm:w-40" : "w-40 sm:w-52"} />
           <span className="hidden border-l border-line pl-3 text-[0.68rem] tracking-[0.22em] text-muted sm:inline">
             CONSULTOR
           </span>

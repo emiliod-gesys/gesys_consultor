@@ -52,6 +52,57 @@ function safeOrder(order: string | undefined): string | undefined {
   return /^[A-Za-z0-9_., ]+$/.test(order) ? order.slice(0, 80) : undefined;
 }
 
+const primitive = z.union([z.string().max(4000), z.number().finite(), z.boolean(), z.null()]);
+
+const odooValue = z.union([primitive, z.array(z.union([primitive, z.array(primitive).max(8)])).max(40)]);
+
+const recordValues = z
+  .record(z.string().regex(/^[A-Za-z0-9_]+$/).max(64), odooValue)
+  .refine((value) => {
+    const keys = Object.keys(value);
+    return keys.length > 0 && keys.length <= 40 && keys.every((key) => !SENSITIVE_KEY.test(key));
+  }, "Los valores están vacíos, son demasiados o incluyen un campo sensible.");
+
+const resumen = z
+  .string()
+  .trim()
+  .min(8)
+  .max(240)
+  .describe("Frase corta, en español, de lo que va a ocurrir. La persona la verá antes de autorizar.");
+
+const ids = z.array(z.number().int().positive()).min(1).max(20);
+
+function previewValues(values: Record<string, unknown>): string {
+  return Object.entries(values)
+    .slice(0, 8)
+    .map(([key, value]) => {
+      const text = JSON.stringify(value);
+      return `${key}=${text.length > 48 ? `${text.slice(0, 48)}…` : text}`;
+    })
+    .join(", ");
+}
+
+export function describeMutation(name: string, input: unknown): string {
+  if (!input || typeof input !== "object") return "Cambio en Odoo.";
+  const data = input as { resumen?: unknown; model?: unknown; ids?: unknown; values?: unknown };
+  const phrase = typeof data.resumen === "string" && data.resumen.trim() ? data.resumen.trim() : "Cambio en Odoo.";
+  const model = typeof data.model === "string" ? data.model : "el modelo";
+  const idList = Array.isArray(data.ids) ? data.ids.filter((item) => typeof item === "number").join(", ") : "";
+  if (name === "odoo_create" && data.values && typeof data.values === "object") {
+    return `${phrase} Creará un registro en ${model}: ${previewValues(data.values as Record<string, unknown>)}.`;
+  }
+  if (name === "odoo_unlink") return `${phrase} Borrará en ${model} los ids ${idList}.`;
+  if (name === "odoo_publish") return `${phrase} Publicará en ${model} los ids ${idList}.`;
+  return phrase;
+}
+
+const MUTATION_TOOLS = new Set(["odoo_create", "odoo_unlink", "odoo_publish"]);
+
+export function mutationApproval(toolName: string, input: unknown) {
+  if (!MUTATION_TOOLS.has(toolName)) return undefined;
+  return { type: "user-approval" as const, reason: describeMutation(toolName, input) };
+}
+
 async function run(session: OdooSession, task: () => Promise<unknown>) {
   try {
     return { ok: true as const, result: await task() };
@@ -181,6 +232,61 @@ export function createOdooTools(session: OdooSession) {
         if (!response.ok) return response;
         const records = Array.isArray(response.result) ? response.result : [];
         return { ok: true, model, count: records.length, records: bound(records) };
+      },
+    }),
+    odoo_create: tool({
+      description:
+        "Crea un registro. No ocurre hasta que la persona autorice el resumen. Úsalo solo cuando pidió crear algo.",
+      inputSchema: z.object({
+        model: modelName,
+        values: recordValues.describe("Valores del registro nuevo. Un many2one va como id numérico."),
+        resumen,
+      }),
+      execute: async ({ model, values }) => {
+        const response = await run(session, () => session.execute(model, "create", [values], {}));
+        if (!response.ok) return response;
+        const id = typeof response.result === "number" ? response.result : null;
+        return { ok: true, model, id, created: id !== null };
+      },
+    }),
+    odoo_unlink: tool({
+      description:
+        "Borra registros por id. No ocurre hasta que la persona autorice el resumen. Confirma antes los ids con una lectura.",
+      inputSchema: z.object({ model: modelName, ids, resumen }),
+      execute: async ({ model, ids: recordIds }) => {
+        const response = await run(session, () => session.execute(model, "unlink", [recordIds], {}));
+        if (!response.ok) return response;
+        return { ok: true, model, ids: recordIds, deleted: response.result === true };
+      },
+    }),
+    odoo_publish: tool({
+      description:
+        "Publica registros. Si el modelo tiene is_published o website_published, lo marca publicado. Si no, llama a action_post (el botón Publicar de facturas y asientos). No ocurre hasta que la persona autorice el resumen.",
+      inputSchema: z.object({ model: modelName, ids, resumen }),
+      execute: async ({ model, ids: recordIds }) => {
+        const fieldsResponse = await run(session, () =>
+          session.execute(model, "fields_get", [], { attributes: ["type"] }),
+        );
+        if (!fieldsResponse.ok) return fieldsResponse;
+        const names =
+          fieldsResponse.result && typeof fieldsResponse.result === "object"
+            ? Object.keys(fieldsResponse.result as Record<string, unknown>)
+            : [];
+        const field = names.includes("is_published")
+          ? "is_published"
+          : names.includes("website_published")
+            ? "website_published"
+            : null;
+        if (field) {
+          const response = await run(session, () =>
+            session.execute(model, "write", [recordIds, { [field]: true }], {}),
+          );
+          if (!response.ok) return response;
+          return { ok: true, model, ids: recordIds, publishedBy: field };
+        }
+        const response = await run(session, () => session.execute(model, "action_post", [recordIds], {}));
+        if (!response.ok) return response;
+        return { ok: true, model, ids: recordIds, publishedBy: "action_post" };
       },
     }),
   };

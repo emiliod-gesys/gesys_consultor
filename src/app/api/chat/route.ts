@@ -14,10 +14,18 @@ import { getCredentials, saveTranscript } from "@/lib/client-service";
 import { messagesForStorage, prepareMessagesForModel } from "@/lib/messages";
 import { getGeminiApiKey, getModelConfig } from "@/lib/model";
 import { openOdoo } from "@/lib/odoo";
-import { createOdooTools } from "@/lib/odoo-tools";
+import { createOdooTools, mutationApproval } from "@/lib/odoo-tools";
 import { environmentLabel, isClientId, isEnvironment } from "@/lib/types";
 
 export const maxDuration = 120;
+
+function approvalSecret(): string {
+  const secret = process.env.SESSION_SECRET?.trim() || process.env.CREDENTIALS_SECRET?.trim() || "";
+  if (secret.length < 16) {
+    throw new Error("Falta SESSION_SECRET para autorizar cambios en Odoo.");
+  }
+  return secret;
+}
 
 function text(message: string, status: number): Response {
   return new Response(message, {
@@ -43,7 +51,9 @@ function instructions(input: {
     `Base de datos: ${input.databaseName}.`,
     `Usuario técnico: ${input.username}.`,
     `Versión de Odoo: ${input.version}.`,
-    "Solo puedes leer. No existen herramientas para crear, modificar ni borrar registros. Si piden un cambio, explícalo y no lo simules como hecho.",
+    "Puedes leer sin pedir permiso.",
+    "Crear, borrar y publicar no ocurren hasta que la persona autorice. Llama a odoo_create, odoo_unlink u odoo_publish con un resumen de una frase: qué registro, en qué modelo y por qué.",
+    "No digas que un cambio ya se hizo hasta recibir el resultado de la herramienta. Si la persona lo cancela, no vuelvas a proponer la misma acción.",
     "No inventes registros, importes ni conteos. Cada cifra sale de una herramienta.",
     "Si la pregunta es puntual, responde solo eso.",
     "Si piden una revisión o buscar problemas, recorre el área pedida: primero odoo_models, luego odoo_fields si el campo no es evidente, después conteos y lecturas cortas.",
@@ -131,6 +141,13 @@ export async function POST(request: Request) {
       }),
       messages: await convertToModelMessages(validated),
       tools,
+      toolApproval: ({ toolCall }) => {
+        if (toolCall.dynamic) {
+          return { type: "denied", reason: "Esa herramienta no está permitida." };
+        }
+        return mutationApproval(toolCall.toolName, toolCall.input);
+      },
+      experimental_toolApprovalSecret: approvalSecret(),
       stopWhen: isStepCount(12),
     });
 

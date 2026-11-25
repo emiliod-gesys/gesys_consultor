@@ -6,13 +6,22 @@ export type OdooSession = {
   uid: number;
   execute: (
     model: string,
-    method: "search_read" | "search_count" | "read" | "fields_get",
+    method: "search_read" | "search_count" | "read" | "fields_get" | "create" | "write" | "unlink" | "action_post",
     args: unknown[],
     kwargs: Record<string, unknown>,
   ) => Promise<unknown>;
 };
 
-const ALLOWED_METHODS = new Set(["search_read", "search_count", "read", "fields_get"]);
+const ALLOWED_METHODS = new Set([
+  "search_read",
+  "search_count",
+  "read",
+  "fields_get",
+  "create",
+  "write",
+  "unlink",
+  "action_post",
+]);
 
 function cleanError(message: string, secret: string): string {
   const redacted = secret ? message.replaceAll(secret, "••••") : message;

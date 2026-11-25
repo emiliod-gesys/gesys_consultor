@@ -31,6 +31,7 @@ async function ClientScreen({ params }: { params: Promise<{ id: string }> }) {
   return (
     <Shell
       fill
+      compact
       aside={
         <Link className={buttonClass("ghost")} href={`/clientes/${client.id}/editar`}>
           Editar

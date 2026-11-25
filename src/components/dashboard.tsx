@@ -43,7 +43,7 @@ export function Dashboard({
         <div>
           <h1 className="font-display text-5xl tracking-tight text-paper">Clientes</h1>
           <p className="mt-3 max-w-xl text-muted">
-            Cada cuenta guarda su Odoo de pruebas y el de producción. El asistente solo lee la base que elijas.
+            Cada cuenta guarda su Odoo de pruebas y el de producción. El asistente lee la base y pide autorización antes de crear, borrar o publicar.
           </p>
         </div>
         <Link className={buttonClass("solid")} href="/clientes/nuevo">

@@ -1,13 +1,13 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { clearConversation } from "@/app/actions";
 import { hostOf } from "@/lib/format";
 import type { ClientSummary, EnvironmentName, EnvironmentSummary } from "@/lib/types";
 import { environmentLabel } from "@/lib/types";
-import { Button, fieldClass } from "@/components/ui";
+import { Button } from "@/components/ui";
 
 const ACCEPTED = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_BYTES = 1_200_000;
@@ -35,24 +35,32 @@ export function ChatThread({
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
-        body: { clientId: client.id, environment },
+        body: {
+          clientId: client.id,
+          environment,
+          confirmProduction: environment === "production",
+        },
       }),
     [client.id, environment],
   );
-  const { messages, sendMessage, setMessages, status, stop, error, regenerate, clearError } = useChat({
-    id: `${client.id}:${environment}`,
-    messages: initialMessages,
-    transport,
-  });
+  const { messages, sendMessage, setMessages, status, stop, error, regenerate, clearError, addToolApprovalResponse } =
+    useChat({
+      id: `${client.id}:${environment}`,
+      messages: initialMessages,
+      transport,
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    });
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const attachmentsRef = useRef(attachments);
   const busy = status === "submitted" || status === "streaming";
+  const pendingApproval = findPendingApproval(messages);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -112,6 +120,7 @@ export function ChatThread({
       { body: { clientId: client.id, environment, confirmProduction } },
     );
     setInput("");
+    if (composerRef.current) composerRef.current.style.height = "auto";
     for (const item of attachments) URL.revokeObjectURL(item.url);
     setAttachments([]);
     setNotice(null);
@@ -129,35 +138,12 @@ export function ChatThread({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-3 flex justify-end">
-        <Button
-          variant="ghost"
-          disabled={clearing || busy || messages.length === 0}
-          onClick={() => {
-            setClearing(true);
-            void clearConversation(client.id, environment)
-              .then((result) => {
-                if (result.ok) {
-                  setMessages([]);
-                  clearError();
-                } else setNotice(result.error);
-              })
-              .finally(() => setClearing(false));
-          }}
-        >
-          Nueva conversación
-        </Button>
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1" aria-live="polite">
+      <div className="flex min-h-0 flex-1 basis-0 flex-col gap-3 overflow-y-auto overscroll-contain pr-1" aria-live="polite">
         {messages.length === 0 ? (
-          <div className="rounded-[1.7rem] border border-dashed border-line px-5 py-10">
-            <p className="font-display text-3xl">Pregunta sobre {environmentLabel(environment).toLowerCase()}</p>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              Pedidos atascados, facturas vencidas, stock o una captura del error. La respuesta sale de{" "}
-              {hostOf(configured.baseUrl)}.
-            </p>
-          </div>
+          <p className="px-1 py-2 text-sm text-muted">
+            Pregunta sobre {environmentLabel(environment).toLowerCase()}. Pedidos, facturas, stock o una captura. La
+            respuesta sale de {hostOf(configured.baseUrl)}.
+          </p>
         ) : null}
 
         {messages.map((message) => (
@@ -167,7 +153,7 @@ export function ChatThread({
         {busy ? (
           <p className="flex items-center gap-2 text-sm text-muted">
             <span className="status-pulse inline-block size-2 animate-pulse rounded-full bg-teal" />
-            {status === "submitted" ? "Conectando con Odoo y con Grok…" : "Respondiendo…"}
+            {status === "submitted" ? "Consultando…" : "Respondiendo…"}
           </p>
         ) : null}
         {error ? (
@@ -181,8 +167,23 @@ export function ChatThread({
         <div ref={endRef} />
       </div>
 
+      {pendingApproval ? (
+        <div className="mt-2 shrink-0 rounded-2xl border border-teal/40 bg-ink px-3 py-3 text-sm leading-6" role="alertdialog" aria-label="Autorizar cambio en Odoo">
+          <p className="text-[0.68rem] tracking-[0.16em] text-teal">AUTORIZACIÓN</p>
+          <p className="mt-1 whitespace-pre-wrap">{pendingApproval.reason}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button onClick={() => addToolApprovalResponse({ id: pendingApproval.id, approved: true, reason: "Autorizado por la persona." })}>
+              Autorizar
+            </Button>
+            <Button variant="ghost" onClick={() => addToolApprovalResponse({ id: pendingApproval.id, approved: false, reason: "Cancelado por la persona." })}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <form
-        className="mt-4 shrink-0 rounded-[1.7rem] border border-line bg-panel p-3"
+        className="mt-1 shrink-0 rounded-2xl border border-line bg-panel p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] sm:p-2"
         onSubmit={(event) => {
           event.preventDefault();
           requestSend();
@@ -213,16 +214,19 @@ export function ChatThread({
           </ul>
         ) : null}
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex items-end gap-1.5">
           <textarea
-            className={`${fieldClass} min-h-24 flex-1 resize-y`}
+            ref={composerRef}
+            rows={1}
+            className="max-h-28 min-h-11 w-full flex-1 resize-none rounded-2xl border border-line bg-ink px-3 py-2 text-base leading-6 text-paper outline-none placeholder:text-muted/70"
             value={input}
-            placeholder={
-              environment === "production"
-                ? "Pregunta sobre producción. Se pedirá confirmación."
-                : "Pregunta sobre la base de pruebas. También puedes pegar una captura."
-            }
-            onChange={(event) => setInput(event.target.value)}
+            placeholder={environment === "production" ? "Pregunta sobre producción." : "Pregunta o pega una captura."}
+            onChange={(event) => {
+              setInput(event.target.value);
+              const field = event.currentTarget;
+              field.style.height = "auto";
+              field.style.height = `${Math.min(field.scrollHeight, 112)}px`;
+            }}
             onPaste={(event) => {
               const files = Array.from(event.clipboardData.files);
               if (files.length === 0) return;
@@ -236,8 +240,8 @@ export function ChatThread({
               }
             }}
           />
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => fileRef.current?.click()}>
+          <div className="flex shrink-0 gap-1.5">
+            <Button variant="ghost" className="px-3" onClick={() => fileRef.current?.click()}>
               Imagen
             </Button>
             {busy ? (
@@ -246,7 +250,7 @@ export function ChatThread({
               </Button>
             ) : (
               <Button type="submit" variant={environment === "production" ? "steel" : "solid"}>
-                {environment === "production" ? "Consultar producción" : "Enviar"}
+                Enviar
               </Button>
             )}
           </div>
@@ -262,11 +266,29 @@ export function ChatThread({
             event.target.value = "";
           }}
         />
-        <p className="mt-2 text-xs text-muted">
-          {modelReady
-            ? "Puedes soltar o pegar hasta 4 imágenes."
-            : "Puedes preparar la consulta, pero el asistente no responderá hasta configurar GEMINI_API_KEY."}
-        </p>
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <p className="text-[0.7rem] text-muted">
+            {modelReady ? "Hasta 4 imágenes." : "Falta GEMINI_API_KEY para responder."}
+          </p>
+          <button
+            type="button"
+            className="shrink-0 text-[0.7rem] text-muted underline-offset-2 hover:underline disabled:opacity-40"
+            disabled={clearing || busy || messages.length === 0}
+            onClick={() => {
+              setClearing(true);
+              void clearConversation(client.id, environment)
+                .then((result) => {
+                  if (result.ok) {
+                    setMessages([]);
+                    clearError();
+                  } else setNotice(result.error);
+                })
+                .finally(() => setClearing(false));
+            }}
+          >
+            Nueva conversación
+          </button>
+        </div>
         {notice ? <p className="mt-1 text-xs text-danger">{notice}</p> : null}
       </form>
 
@@ -275,8 +297,8 @@ export function ChatThread({
         <div className="rounded-[1.7rem] border border-steel/40 bg-panel p-5">
           <h2 id="production-confirm-title" className="font-display text-3xl">Confirmar consulta en producción</h2>
           <p className="mt-3 text-sm text-muted">
-            Esta pregunta se enviará a la base de producción de {client.name} ({hostOf(configured.baseUrl)}). El
-            asistente no puede crear, modificar ni borrar registros, pero leerá datos reales.
+            Esta pregunta se enviará a la base de producción de {client.name} ({hostOf(configured.baseUrl)}). Si
+            propone crear, borrar o publicar, verás otra autorización con el detalle antes de que ocurra.
           </p>
           <p className="mt-3 line-clamp-4 text-sm">{input || "La consulta incluye imágenes."}</p>
           <div className="mt-5 flex flex-wrap gap-2">
@@ -305,10 +327,10 @@ function MessageView({ message }: { message: UIMessage }) {
   return (
     <article className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[42rem] rounded-[1.4rem] px-4 py-3 ${mine ? "bg-teal-deep text-paper" : "bg-panel-2"}`}
+        className={`rounded-2xl px-3 py-2.5 sm:px-4 sm:py-3 ${mine ? "max-w-[85%] bg-teal-deep text-paper" : "w-full bg-panel-2"}`}
       >
         <p className="mb-1 text-[0.68rem] tracking-[0.16em] text-muted">{mine ? "TÚ" : "GESYS"}</p>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 text-[0.95rem] leading-6 sm:text-base sm:leading-7">
           {message.parts.map((part, index) => (
             <PartView key={`${message.id}-${index}`} part={part} />
           ))}
@@ -343,29 +365,54 @@ function PartView({ part }: { part: UIMessage["parts"][number] }) {
     );
   }
   if (part.type.startsWith("tool-")) {
-    const toolPart = part as {
-      type: string;
-      state?: string;
-      input?: { model?: string };
-      output?: { error?: string; count?: number };
-      errorText?: string;
-    };
-    const label = toolLabel(part.type);
-    const model = toolPart.input?.model;
-    const detail =
-      toolPart.errorText ||
-      toolPart.output?.error ||
-      (typeof toolPart.output?.count === "number" ? `${toolPart.output.count} filas` : "");
-    const running = toolPart.state === "input-streaming" || toolPart.state === "input-available";
+    return <ToolPart part={part} />;
+  }
+  return null;
+}
+
+function ToolPart({ part }: { part: UIMessage["parts"][number] }) {
+  const toolPart = part as {
+    type: string;
+    state?: string;
+    input?: { model?: string; resumen?: string; ids?: number[]; values?: Record<string, unknown> };
+    output?: { error?: string; count?: number; id?: number; deleted?: boolean; publishedBy?: string };
+    errorText?: string;
+    approval?: { id: string; isAutomatic?: boolean; approved?: boolean; requestReason?: string };
+  };
+  const name = part.type.slice("tool-".length);
+  const mutating = name === "odoo_create" || name === "odoo_unlink" || name === "odoo_publish";
+  const waiting = toolPart.state === "approval-requested" && toolPart.approval && !toolPart.approval.isAutomatic;
+  if (mutating && waiting) {
     return (
-      <p className="rounded-2xl border border-line px-3 py-2 text-xs text-muted">
-        {running ? "Consultando" : "Consulta"} · {label}
-        {model ? ` · ${model}` : ""}
-        {detail ? ` · ${detail}` : ""}
+      <p className="rounded-2xl border border-teal/30 px-3 py-2 text-xs text-teal">
+        Esperando autorización.
       </p>
     );
   }
-  return null;
+  if (mutating && toolPart.state === "approval-responded") {
+    return (
+      <p className="rounded-2xl border border-line px-3 py-2 text-xs text-muted">
+        {toolPart.approval?.approved ? "Autorizado. Aplicando el cambio…" : "Cambio cancelado."}
+      </p>
+    );
+  }
+  const label = toolLabel(part.type);
+  const model = toolPart.input?.model;
+  const detail =
+    toolPart.errorText ||
+    toolPart.output?.error ||
+    (typeof toolPart.output?.count === "number" ? `${toolPart.output.count} filas` : "") ||
+    (typeof toolPart.output?.id === "number" ? `id ${toolPart.output.id}` : "") ||
+    (toolPart.output?.deleted ? "borrado" : "") ||
+    (toolPart.output?.publishedBy ? `publicado vía ${toolPart.output.publishedBy}` : "");
+  const running = toolPart.state === "input-streaming" || toolPart.state === "input-available";
+  return (
+    <p className="rounded-2xl border border-line px-3 py-2 text-xs leading-5 text-muted">
+      {running ? "Consultando" : mutating ? "Cambio" : "Consulta"} · {label}
+      {model ? ` · ${model}` : ""}
+      {detail ? ` · ${detail}` : ""}
+    </p>
+  );
 }
 
 function toolLabel(type: string): string {
@@ -380,9 +427,37 @@ function toolLabel(type: string): string {
       return "lectura";
     case "odoo_read":
       return "ids";
+    case "odoo_create":
+      return "crear";
+    case "odoo_unlink":
+      return "borrar";
+    case "odoo_publish":
+      return "publicar";
     default:
       return "Odoo";
   }
+}
+
+function findPendingApproval(messages: UIMessage[]): { id: string; reason: string } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    for (const part of message.parts) {
+      if (!part.type.startsWith("tool-")) continue;
+      const tool = part as {
+        state?: string;
+        input?: { resumen?: string };
+        approval?: { id: string; isAutomatic?: boolean; requestReason?: string };
+      };
+      if (tool.state === "approval-requested" && tool.approval && !tool.approval.isAutomatic) {
+        return {
+          id: tool.approval.id,
+          reason: tool.approval.requestReason || tool.input?.resumen || "Cambio en Odoo.",
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function readableError(error: Error): string {

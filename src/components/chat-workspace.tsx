@@ -23,14 +23,11 @@ export function ChatWorkspace({
   const configured = client[environment];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs tracking-[0.18em] text-muted">CONSULTA</p>
-          <h1 className="font-display text-4xl tracking-tight sm:text-5xl">{client.name}</h1>
-          <p className="mt-2 max-w-2xl text-sm text-muted">
-            {model.id} · razonamiento {model.effort}. {modelNote}
-          </p>
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5 sm:gap-2">
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="hidden text-[0.65rem] tracking-[0.18em] text-muted sm:block">CONSULTA</p>
+          <h1 className="truncate font-display text-2xl tracking-tight sm:text-4xl">{client.name}</h1>
         </div>
         <div className="flex rounded-full border border-line bg-panel p-1" role="radiogroup" aria-label="Base de datos">
           <EnvironmentButton
@@ -48,11 +45,13 @@ export function ChatWorkspace({
           />
         </div>
       </div>
+      <p className="hidden shrink-0 text-xs text-muted md:line-clamp-1 md:block">
+        {model.id} · razonamiento {model.effort}. {modelNote}
+      </p>
 
       {environment === "production" && configured ? (
-        <p className="rounded-3xl border border-steel/40 bg-steel-deep px-4 py-3 text-sm text-steel" role="status">
-          Estás en la base de producción de {hostOf(configured.baseUrl)}. Cada envío pide confirmación. El asistente
-          solo lee.
+        <p className="shrink-0 truncate rounded-full border border-steel/40 bg-steel-deep px-3 py-1.5 text-xs text-steel" role="status">
+          Producción · {hostOf(configured.baseUrl)}. Crear, borrar o publicar pide autorización.
         </p>
       ) : null}
 
@@ -111,7 +110,7 @@ function EnvironmentButton({
       aria-checked={checked}
       disabled={!available}
       title={available ? label : `${label} sin configurar`}
-      className={`h-11 rounded-full px-4 text-sm disabled:cursor-not-allowed disabled:opacity-40 ${checked ? active : "text-muted"}`}
+      className={`h-9 rounded-full px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40 ${checked ? active : "text-muted"}`}
       onClick={onSelect}
     >
       {label}
