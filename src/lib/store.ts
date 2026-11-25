@@ -28,7 +28,7 @@ async function openStore(): Promise<Store> {
   }
   if (process.env.VERCEL) {
     throw new Error(
-      "En Vercel hace falta DATABASE_URL. Crea una base Postgres (Neon sirve) y enlaza la cadena de conexión. El disco de la función no conserva los clientes.",
+      "En Vercel hace falta DATABASE_URL. Enlaza el pooler de Supabase (puerto 6543). El disco de la función no conserva los clientes.",
     );
   }
   const { createFileStore } = await import("@/lib/file-store");

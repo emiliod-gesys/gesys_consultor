@@ -25,9 +25,12 @@ function sqlClient(connectionString: string) {
     globalSql.gesysSql = postgres(connectionString, {
       max: 1,
       prepare: false,
+      // El pooler de Supabase en el puerto 6543 no responde consultas encadenadas.
+      max_pipeline: 1,
       idle_timeout: 20,
       max_lifetime: 60 * 10,
       connect_timeout: 15,
+      query_timeout: 20,
       ...(hasSslMode ? {} : { ssl: local ? false : "require" }),
     });
   }
@@ -73,8 +76,22 @@ function group(rows: ClientRow[]): StoredClient[] {
 
 let migrated = false;
 
+async function schemaReady(sql: ReturnType<typeof postgres>): Promise<boolean> {
+  const rows = await sql<{ ready: boolean }[]>`
+    select to_regclass('public.clients') is not null
+       and to_regclass('public.client_environments') is not null
+       and to_regclass('public.chat_transcripts') is not null as ready
+  `;
+  return rows[0]?.ready === true;
+}
+
 export async function createPostgresStore(connectionString: string): Promise<Store> {
   const sql = sqlClient(connectionString);
+  if (!migrated) {
+    if (await schemaReady(sql)) {
+      migrated = true;
+    }
+  }
   if (!migrated) {
     await sql`
       create table if not exists clients (
@@ -87,6 +104,7 @@ export async function createPostgresStore(connectionString: string): Promise<Sto
         constraint clients_notes_length check (char_length(notes) <= 4000)
       )
     `;
+    await sql`create index if not exists clients_updated_at_idx on clients (updated_at desc)`;
     await sql`
       create table if not exists client_environments (
         client_id text not null references clients (id) on delete cascade,
